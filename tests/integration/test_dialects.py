@@ -8,7 +8,6 @@ import uuid
 import pytest
 
 from keelmodel.registry import ModuleDefinition, ModuleRegistry
-from keelmodel.runtime.base import Base
 from keelmodel.runtime.context import OperationContext
 from keelmodel.runtime.session import KeelModel
 from keelmodel.schema import parse_model
@@ -61,7 +60,8 @@ def _build(db_url: str, suffix: str) -> KeelModel:
         (team, member),
     )
     km = KeelModel(db_url, registry)
-    Base.metadata.create_all(km.engine)
+    for t in (km._all_mapped["hr.Team"].__table__, km._all_mapped["hr.Member"].__table__):
+        t.create(km.engine, checkfirst=True)
     return km
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from typing import Any
 
@@ -10,7 +11,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from keelmodel.authz import AuthorizationProvider
 from keelmodel.registry import ModuleRegistry, RegistryError
 from keelmodel.runtime.context import OperationContext
-from keelmodel.runtime.errors import ConflictError, NotFoundError, PersistenceError, ValidationError
+from keelmodel.runtime.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDenied,
+    PersistenceError,
+    ValidationError,
+)
 from keelmodel.runtime.filtering import compile_filter_expression
 from keelmodel.runtime.models import map_model, wire_relationships
 from keelmodel.runtime.operations import Operation
@@ -32,10 +39,10 @@ class KeelModel:
         self.authz = authz
         self.audit = audit
         self.engine = create_engine(database_url)
-        if audit is not None:
-            audit.create_all(self.engine)
-            audit.install()
         self.session_factory = sessionmaker(self.engine, expire_on_commit=False)
+        if audit is not None:
+            audit.install(self.session_factory)
+        self._tx = threading.local()
         self._models: dict[str, Any] = {}
         self._definitions: dict[str, ModelDefinition] = {}
         self._all_mapped: dict[str, Any] = {}
@@ -44,7 +51,7 @@ class KeelModel:
                 resource = f"{module.name}.{model_name}"
                 definition = registry.get_model(resource)
                 self._definitions[resource] = definition
-        all_defs = {m.resource: m for m in registry.models} | {
+        all_defs = {
             r: registry.get_model_any(r) for r in _all_resources(registry)
         }
         dialect = self.engine.dialect.name
@@ -74,7 +81,7 @@ class KeelModel:
             instance = self._construct(model, self._definition(resource), values)
             session.add(instance)
             try:
-                session.commit()
+                self._commit(session)
             except IntegrityError as exc:
                 raise ConflictError(f"failed to create {resource}: {exc.orig}") from exc
             session.refresh(instance)
@@ -91,17 +98,15 @@ class KeelModel:
             self.authz.check(Operation.READ, resource, context)
         model = self._model(resource)
         definition = self._definition(resource)
-        pk_fields = definition.primary_key_fields
         coercer = self._field_coercer(definition)
         with self._session(context) as session:
-            if len(pk_fields) == 1:
-                instance = session.get(model, coercer(pk_fields[0], key))
-            else:
-                instance = session.get(
-                    model, self._composite_key(pk_fields, key, coercer)
-                )
+            instance = self._fetch(session, model, definition, key, coercer)
             if instance is None:
                 raise NotFoundError(f"{resource} {key!r} was not found")
+            if self.authz and not self.authz.record_allowed(
+                Operation.READ, resource, context, instance
+            ):
+                raise PermissionDenied(f"read on {resource} {key!r}: record-level deny")
             return self._project(model, instance, include_private=include_private)
 
     def update(
@@ -112,20 +117,18 @@ class KeelModel:
             changes = self.authz.filter_fields(Operation.UPDATE, resource, context, changes)
         model = self._model(resource)
         definition = self._definition(resource)
-        pk_fields = definition.primary_key_fields
         coercer = self._field_coercer(definition)
         with self._session(context) as session:
-            if len(pk_fields) == 1:
-                instance = session.get(model, coercer(pk_fields[0], key))
-            else:
-                instance = session.get(
-                    model, self._composite_key(pk_fields, key, coercer)
-                )
+            instance = self._fetch(session, model, definition, key, coercer)
             if instance is None:
                 raise NotFoundError(f"{resource} {key!r} was not found")
+            if self.authz and not self.authz.record_allowed(
+                Operation.UPDATE, resource, context, instance
+            ):
+                raise PermissionDenied(f"update on {resource} {key!r}: record-level deny")
             self._assign(instance, definition, changes)
             try:
-                session.commit()
+                self._commit(session)
             except IntegrityError as exc:
                 raise ConflictError(f"failed to update {resource}: {exc.orig}") from exc
             session.refresh(instance)
@@ -136,20 +139,18 @@ class KeelModel:
             self.authz.check(Operation.DELETE, resource, context)
         model = self._model(resource)
         definition = self._definition(resource)
-        pk_fields = definition.primary_key_fields
         coercer = self._field_coercer(definition)
         with self._session(context) as session:
-            if len(pk_fields) == 1:
-                instance = session.get(model, coercer(pk_fields[0], key))
-            else:
-                instance = session.get(
-                    model, self._composite_key(pk_fields, key, coercer)
-                )
+            instance = self._fetch(session, model, definition, key, coercer)
             if instance is None:
                 raise NotFoundError(f"{resource} {key!r} was not found")
+            if self.authz and not self.authz.record_allowed(
+                Operation.DELETE, resource, context, instance
+            ):
+                raise PermissionDenied(f"delete on {resource} {key!r}: record-level deny")
             session.delete(instance)
             try:
-                session.commit()
+                self._commit(session)
             except IntegrityError as exc:
                 raise ConflictError(f"failed to delete {resource}: {exc.orig}") from exc
 
@@ -164,15 +165,17 @@ class KeelModel:
     ) -> Page:
         if self.authz:
             self.authz.check(Operation.QUERY, resource, context)
-            record_cond = self.authz.record_condition(resource, context)
-            if record_cond and record_cond.get("__deny_all__"):
-                from keelmodel.runtime.errors import PermissionDenied
-
-                raise PermissionDenied(f"query on {resource}: record-level deny")
         model = self._model(resource)
         definition = self._definition(resource)
         statement = select(model)
         count_statement = select(func.count()).select_from(model)
+        if self.authz:
+            authz_filter = self.authz.record_filter(
+                resource, context, model, self._field_coercer(definition)
+            )
+            if authz_filter is not None:
+                statement = statement.where(authz_filter)
+                count_statement = count_statement.where(authz_filter)
         if filters is not None:
             try:
                 condition = compile_filter_expression(
@@ -211,16 +214,48 @@ class KeelModel:
             instances = [self._construct(model, definition, values) for values in items]
             session.add_all(instances)
             try:
-                session.commit()
+                self._commit(session)
             except IntegrityError as exc:
-                session.rollback()
                 raise ConflictError(f"failed bulk create for {resource}: {exc.orig}") from exc
             return tuple(self._project(model, instance) for instance in instances)
 
     @contextmanager
-    def transaction(self) -> Any:
-        with self._session() as session:
+    def transaction(self, context: OperationContext | None = None) -> Any:
+        """Shared atomic transaction: ops inside commit together, or all roll back."""
+        if getattr(self._tx, "session", None) is not None:
+            raise PersistenceError("nested transactions are not supported")
+        session: Session = self.session_factory()
+        if context is not None:
+            session.info["keelmodel_context"] = context
+        self._tx.session = session
+        try:
             yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            self._tx.session = None
+            session.close()
+
+    def _fetch(
+        self,
+        session: Session,
+        model: Any,
+        definition: ModelDefinition,
+        key: Any,
+        coercer: Any,
+    ) -> Any:
+        pk_fields = definition.primary_key_fields
+        if len(pk_fields) == 1:
+            return session.get(model, coercer(pk_fields[0], key))
+        return session.get(model, self._composite_key(pk_fields, key, coercer))
+
+    def _commit(self, session: Session) -> None:
+        if session is getattr(self._tx, "session", None):
+            session.flush()
+        else:
+            session.commit()
 
     def _field_coercer(self, definition: ModelDefinition):
         fields = {f.name: f for f in definition.fields}
@@ -310,30 +345,26 @@ class KeelModel:
             setattr(instance, name, deserialize_value(field, value))
 
     def _project(self, model: Any, instance: Any, include_private: bool = False) -> dict[str, Any]:
-        if not include_private:
-            return {
-                column.name: getattr(instance, column.name)
-                for column in instance.__table__.columns
-                if not column.name.startswith("_")
-            }
         return {
             column.name: getattr(instance, column.name)
             for column in instance.__table__.columns
+            if include_private or not column.name.startswith("_")
         }
 
     @contextmanager
-    def _session(
-        self, context: OperationContext | None = None
-    ) -> Any:
+    def _session(self, context: OperationContext | None = None) -> Any:
+        bound = getattr(self._tx, "session", None)
+        if bound is not None:
+            if context is not None:
+                bound.info["keelmodel_context"] = context
+            yield bound
+            return
         session: Session = self.session_factory()
         if context is not None:
             session.info["keelmodel_context"] = context
         try:
             yield session
-        except (ValidationError, ConflictError, NotFoundError, PersistenceError):
-            session.rollback()
-            raise
-        except Exception:
+        except BaseException:
             session.rollback()
             raise
         finally:

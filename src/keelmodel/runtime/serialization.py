@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from keelmodel.runtime.errors import ValidationError
 from keelmodel.schema import FieldDefinition
+
+_ALLOWED_URL_SCHEMES = {"http", "https"}
 
 
 def serialize_value(field: FieldDefinition, value: Any) -> Any:
@@ -14,59 +17,99 @@ def serialize_value(field: FieldDefinition, value: Any) -> Any:
         return None
     if field.type == "uuid":
         return str(value) if isinstance(value, UUID) else value
-    if field.type == "decimal":
-        return value
-    if field.type == "date":
-        return value.isoformat() if isinstance(value, date) else value
-    if field.type == "datetime":
-        return value.isoformat() if isinstance(value, datetime) else value
-    if field.type == "bytes":
-        return value
+    if field.type == "date" and isinstance(value, date):
+        return value.isoformat()
+    if field.type == "datetime" and isinstance(value, datetime):
+        return value.isoformat()
     return value
 
 
 def deserialize_value(field: FieldDefinition, value: Any) -> Any:
     if value is None:
         return None
-    if field.type == "uuid":
-        try:
-            return UUID(str(value))
-        except ValueError as exc:
-            raise ValidationError(f"invalid UUID value for field {field.name!r}") from exc
-    if field.type == "integer":
-        try:
-            return int(value)
-        except (ValueError, TypeError) as exc:
-            raise ValidationError(f"invalid integer value for field {field.name!r}") from exc
-    if field.type == "decimal":
-        try:
-            return Decimal(str(value))
-        except (ValueError, ArithmeticError) as exc:
-            raise ValidationError(f"invalid decimal value for field {field.name!r}") from exc
-    if field.type == "boolean":
-        return bool(value)
-    if field.type == "date":
-        if isinstance(value, date):
+    match field.type:
+        case "uuid":
+            if isinstance(value, UUID):
+                return value
+            try:
+                return UUID(str(value))
+            except ValueError as exc:
+                raise ValidationError(f"invalid UUID for field {field.name!r}") from exc
+        case "integer":
+            if isinstance(value, bool):
+                raise ValidationError(f"invalid integer for field {field.name!r}")
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.strip().lstrip("+-").isdigit():
+                return int(value)
+            raise ValidationError(
+                f"invalid integer {value!r} for field {field.name!r} "
+                "(floats and non-digit strings are rejected)"
+            )
+        case "decimal":
+            if isinstance(value, bool):
+                raise ValidationError(f"invalid decimal for field {field.name!r}")
+            try:
+                return Decimal(str(value))
+            except InvalidOperation as exc:
+                raise ValidationError(f"invalid decimal for field {field.name!r}") from exc
+        case "boolean":
+            if isinstance(value, bool):
+                return value
+            raise ValidationError(
+                f"invalid boolean {value!r} for field {field.name!r}: "
+                "must be true/false, not a coercible value"
+            )
+        case "date":
+            if isinstance(value, datetime):
+                raise ValidationError(f"invalid date for field {field.name!r}")
+            if isinstance(value, date):
+                return value
+            try:
+                return date.fromisoformat(str(value))
+            except ValueError as exc:
+                raise ValidationError(f"invalid date for field {field.name!r}") from exc
+        case "datetime":
+            dt = value if isinstance(value, datetime) else _parse_datetime(value, field)
+            if dt.tzinfo is None:
+                raise ValidationError(
+                    f"naive datetime for field {field.name!r}: "
+                    "timezone-aware values are required"
+                )
+            return dt
+        case "bytes":
+            if isinstance(value, bytes):
+                return value
+            raise ValidationError(f"invalid bytes for field {field.name!r}")
+        case "url":
+            if not isinstance(value, str):
+                raise ValidationError(f"invalid URL for field {field.name!r}")
+            parsed = urlparse(value)
+            if parsed.scheme not in _ALLOWED_URL_SCHEMES or not parsed.netloc:
+                raise ValidationError(
+                    f"invalid URL {value!r} for field {field.name!r}: "
+                    f"scheme must be one of {sorted(_ALLOWED_URL_SCHEMES)} with a host"
+                )
             return value
-        try:
-            return date.fromisoformat(str(value))
-        except ValueError as exc:
-            raise ValidationError(f"invalid date value for field {field.name!r}") from exc
-    if field.type == "datetime":
-        if isinstance(value, datetime):
+        case "text" | "enum":
+            if not isinstance(value, str):
+                raise ValidationError(f"invalid text for field {field.name!r}")
+            if field.type == "enum" and value not in field.values:
+                raise ValidationError(
+                    f"invalid enum value {value!r} for field {field.name!r}"
+                )
             return value
-        try:
-            return datetime.fromisoformat(str(value))
-        except ValueError as exc:
-            raise ValidationError(f"invalid datetime value for field {field.name!r}") from exc
-    if field.type == "bytes":
-        if isinstance(value, bytes):
+        case _:
             return value
-        try:
-            return bytes.fromhex(str(value))
-        except ValueError as exc:
-            raise ValidationError(f"invalid bytes value for field {field.name!r}") from exc
-    return value
+
+
+def _parse_datetime(value: Any, field: FieldDefinition) -> datetime:
+    if not isinstance(value, str):
+        raise ValidationError(f"invalid datetime for field {field.name!r}")
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValidationError(f"invalid datetime for field {field.name!r}") from exc
 
 
 def coerce_input_values(definition: Any, values: dict[str, Any]) -> dict[str, Any]:
@@ -74,7 +117,6 @@ def coerce_input_values(definition: Any, values: dict[str, Any]) -> dict[str, An
     unknown = set(values) - set(fields)
     if unknown:
         raise ValidationError(f"unknown field(s): {sorted(unknown)}")
-    result = {}
-    for name, value in values.items():
-        result[name] = deserialize_value(fields[name], value)
-    return result
+    return {
+        name: deserialize_value(fields[name], value) for name, value in values.items()
+    }

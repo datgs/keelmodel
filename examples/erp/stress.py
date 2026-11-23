@@ -44,8 +44,11 @@ def build() -> KeelModel:
     authz = AuthorizationProvider(ROOT / "policies" / "authorization.yaml")
     audit = AuditExtension(redact_fields={"salary", "email"})
     km = KeelModel(DB_URL, registry, authz=authz, audit=audit)
-    Base.metadata.drop_all(km.engine, checkfirst=True)
+    if os.environ.get("KEELMODEL_RESET") == "1":
+        Base.metadata.drop_all(km.engine, checkfirst=True)
+        audit.table.drop(km.engine, checkfirst=True)
     Base.metadata.create_all(km.engine)
+    audit.create_all(km.engine)
     return km
 
 

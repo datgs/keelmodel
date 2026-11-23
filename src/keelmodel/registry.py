@@ -67,6 +67,23 @@ class ModuleRegistry:
                     f"found {installed.version}"
                 )
 
+        declared_deps = {dep.name for dep in module.requires} | {module.name}
+        for model in module_models:
+            for relation in model.relations:
+                target_module = relation.target.split(".", 1)[0]
+                if target_module not in declared_deps:
+                    raise RegistryError(
+                        f"model {model.resource!r} relation {relation.name!r} targets "
+                        f"module {target_module!r} without a declared dependency"
+                    )
+                if target_module != module.name:
+                    target_def = self._models.get(relation.target)
+                    if target_def is None:
+                        raise RegistryError(
+                            f"model {model.resource!r} relation {relation.name!r} "
+                            f"requires {relation.target!r} to be a public export"
+                        )
+
         module_ids = {f"{module.name}.{model.name}" for model in module_models}
         collisions = module_ids & self._models.keys()
         if collisions:

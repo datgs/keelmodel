@@ -4,7 +4,6 @@ import uuid
 import pytest
 
 from keelmodel.registry import ModuleDefinition, ModuleRegistry
-from keelmodel.runtime.base import Base
 from keelmodel.runtime.context import OperationContext
 from keelmodel.runtime.session import KeelModel
 from keelmodel.schema import parse_model
@@ -44,9 +43,10 @@ def keelmodel():
         (model,),
     )
     km = KeelModel(db_url, registry)
-    Base.metadata.create_all(km.engine)
+    model_type = km._models["test.Widget"]
+    model_type.__table__.create(km.engine, checkfirst=True)
     yield km
-    Base.metadata.drop_all(km.engine)
+    model_type.__table__.drop(km.engine, checkfirst=True)
     km.engine.dispose()
 
 

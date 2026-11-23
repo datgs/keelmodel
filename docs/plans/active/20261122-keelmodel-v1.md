@@ -71,8 +71,22 @@ Out of scope:
 - [x] Named mixins: uuid_pk, timestamps; unique/index constraints.
 - [x] Audit extension: same-transaction records via before_flush, field redaction.
 - [x] Example sales module: Customer, Invoice, InvoiceLine with relations + mixins.
+- [x] DB safety: demo/stress require explicit KEELMODEL_RESET=1; per-test table cleanup only.
+- [x] Shared atomic transaction contract (transaction context + _commit defer).
+- [x] Strict input validation (boolean/integer/datetime-tz/url/enum negative cases).
+- [x] Record-level authz: allow-conditions to SQL for query, per-record check for get/update/delete.
+- [x] Module boundary: relation to other module's private model requires declared dep; target must be public.
+- [x] Audit: factory-scoped listener (no global leak), no auto-DDL at init, explicit create_all.
+- [x] Migration drafts: revision header, FK columns for relations, unique/index.
 - [ ] Security review of authorization design before enforcement is enabled by default.
 - [ ] Field-level auth enforcement depth (read/filter/order separation).
+- [ ] Generated model classes used by runtime (currently internal map_model).
+
+**P2 scope note**: plan declared PostgreSQL-only, but code/tests now prove
+MySQL + SQLite via the same abstraction. Keeping multi-dialect as a v1
+capability (it cost dialect-aware type mapping + two real bug fixes).
+Compatibility contract: UUID/text/datetime/enum/relations work across all
+three; JSON-based types map to JSONB on Postgres only.
 - [ ] Sync persistence API and atomic bulk.
 - [ ] Security review, then keelpolicy and core auth.
 - [ ] Alembic drafts and representative module acceptance.

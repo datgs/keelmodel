@@ -44,8 +44,9 @@ class AuditExtension:
     def create_all(self, engine: Any) -> None:
         AuditBase.metadata.create_all(engine)
 
-    def install(self) -> None:
-        event.listen(Session, "before_flush", self._before_flush)
+    def install(self, session_factory: Any) -> None:
+        """Scope the listener to this KeelModel's session factory only."""
+        event.listen(session_factory, "before_flush", self._before_flush)
 
     def _before_flush(self, session: Session, flush_context: Any, instances: Any) -> None:
         context = session.info.get("keelmodel_context")
