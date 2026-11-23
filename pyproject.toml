@@ -2,6 +2,22 @@
 name = "keelmodel"
 version = "0.1.0"
 description = "A strict, sync-first data SDK for business applications"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Dat Giang", email = "datgs@users.noreply.github.com" }
+]
+keywords = ["pre-erp", "data-model", "yaml", "orm", "sqlalchemy", "authorization"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0,<3.0",

@@ -1,0 +1,34 @@
+name: Release
+
+# Publishes to PyPI on tag push (v*) via trusted publishing — no API
+# token stored. Requires a pending publisher registration on PyPI:
+#   project: keelmodel · owner: datgs · repo: keelmodel
+#   workflow: release.yml · environment: pypi
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write        # OIDC token for PyPI trusted publishing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build dist
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always
