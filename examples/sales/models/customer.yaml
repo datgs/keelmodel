@@ -1,0 +1,15 @@
+version: 1
+module: sales
+model: Customer
+mixins:
+  - uuid_pk
+  - timestamps
+fields:
+  name:
+    type: text
+    required: true
+  email:
+    type: url
+constraints:
+  unique:
+    - [email]

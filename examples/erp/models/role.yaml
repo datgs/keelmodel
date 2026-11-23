@@ -1,0 +1,20 @@
+version: 1
+module: erp
+model: Role
+mixins:
+  - uuid_pk
+fields:
+  code:
+    type: text
+    required: true
+    length: 100
+  description:
+    type: text
+relations:
+  assignments:
+    type: one_to_many
+    target: erp.RoleAssignment
+    mapped_by: role
+constraints:
+  unique:
+    - [code]

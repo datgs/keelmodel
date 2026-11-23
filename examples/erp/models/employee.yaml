@@ -1,0 +1,40 @@
+version: 1
+module: erp
+model: Employee
+mixins:
+  - uuid_pk
+  - timestamps
+fields:
+  full_name:
+    type: text
+    required: true
+    length: 200
+  email:
+    type: url
+    required: true
+    length: 320
+  salary:
+    type: decimal
+    required: true
+    default: 0
+relations:
+  department:
+    type: many_to_one
+    target: erp.Department
+    required: true
+  manager:
+    type: many_to_one
+    target: erp.Employee
+  roles:
+    type: one_to_many
+    target: erp.RoleAssignment
+    mapped_by: employee
+constraints:
+  unique:
+    - [email]
+  index:
+    - [department_id]
+  check:
+    - field: salary
+      op: gte
+      value: 0

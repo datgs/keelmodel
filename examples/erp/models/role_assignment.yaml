@@ -1,0 +1,22 @@
+version: 1
+module: erp
+model: RoleAssignment
+mixins:
+  - uuid_pk
+fields:
+  granted_by:
+    type: text
+relations:
+  employee:
+    type: many_to_one
+    target: erp.Employee
+    required: true
+    on_delete: cascade
+  role:
+    type: many_to_one
+    target: erp.Role
+    required: true
+    on_delete: cascade
+constraints:
+  unique:
+    - [employee_id, role_id]

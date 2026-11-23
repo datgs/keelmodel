@@ -1,0 +1,12 @@
+version: 1
+statements:
+  - effect: allow
+    actions: ["*"]
+    resources: ["sales.*"]
+    subjects: ["role:admin"]
+    reason: admins have full access to sales resources
+  - effect: allow
+    actions: [read, query]
+    resources: ["sales.*"]
+    subjects: ["role:viewer"]
+    reason: viewers can read and query sales resources

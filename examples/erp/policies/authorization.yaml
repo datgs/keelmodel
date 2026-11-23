@@ -1,0 +1,10 @@
+version: 1
+statements:
+  - effect: allow
+    actions: ["*"]
+    resources: ["erp.*"]
+    subjects: ["role:admin"]
+  - effect: allow
+    actions: [read, query]
+    resources: ["erp.*"]
+    subjects: ["role:staff"]

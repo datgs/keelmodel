@@ -1,0 +1,27 @@
+version: 1
+module: sales
+model: InvoiceLine
+mixins:
+  - uuid_pk
+fields:
+  description:
+    type: text
+    required: true
+  quantity:
+    type: integer
+    required: true
+    default: 1
+  unit_price:
+    type: decimal
+    required: true
+relations:
+  invoice:
+    type: many_to_one
+    target: sales.Invoice
+    required: true
+    on_delete: cascade
+constraints:
+  check:
+    - field: quantity
+      op: gt
+      value: 0

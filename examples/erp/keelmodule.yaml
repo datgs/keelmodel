@@ -1,0 +1,6 @@
+version: 1
+name: erp
+module_version: 1.0.0
+requires: []
+exports:
+  models: [Department, Employee, Role, RoleAssignment, Project, Milestone]

@@ -1,0 +1,36 @@
+version: 1
+module: sales
+model: Invoice
+mixins:
+  - uuid_pk
+  - timestamps
+fields:
+  number:
+    type: text
+    required: true
+  status:
+    type: enum
+    values: [draft, submitted, paid, void]
+    required: true
+    default: draft
+  total:
+    type: decimal
+    required: true
+    default: 0
+relations:
+  customer:
+    type: many_to_one
+    target: sales.Customer
+    required: true
+    on_delete: restrict
+  lines:
+    type: one_to_many
+    target: sales.InvoiceLine
+    mapped_by: invoice
+constraints:
+  unique:
+    - [number]
+  check:
+    - field: total
+      op: gte
+      value: 0

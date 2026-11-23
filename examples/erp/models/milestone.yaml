@@ -1,0 +1,28 @@
+version: 1
+module: erp
+model: Milestone
+mixins:
+  - uuid_pk
+fields:
+  name:
+    type: text
+    required: true
+    length: 300
+  due_date:
+    type: date
+  done:
+    type: boolean
+    required: true
+    default: false
+relations:
+  project:
+    type: many_to_one
+    target: erp.Project
+    required: true
+    on_delete: cascade
+  approver:
+    type: many_to_one
+    target: erp.Employee
+constraints:
+  index:
+    - [project_id, done]

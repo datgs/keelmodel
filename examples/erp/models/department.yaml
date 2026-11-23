@@ -1,0 +1,21 @@
+version: 1
+module: erp
+model: Department
+mixins:
+  - uuid_pk
+fields:
+  name:
+    type: text
+    required: true
+    length: 200
+relations:
+  employees:
+    type: one_to_many
+    target: erp.Employee
+    mapped_by: department
+  head:
+    type: one_to_one
+    target: erp.Employee
+constraints:
+  unique:
+    - [name]

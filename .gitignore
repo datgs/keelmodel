@@ -1,0 +1,16 @@
+# Harness core maintenance binary
+scripts/bin/harness
+scripts/bin/harness.exe
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+

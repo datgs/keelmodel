@@ -1,0 +1,40 @@
+version: 1
+module: erp
+model: Project
+mixins:
+  - uuid_pk
+  - timestamps
+fields:
+  code:
+    type: text
+    required: true
+    length: 100
+  title:
+    type: text
+    required: true
+  budget:
+    type: decimal
+    required: true
+    default: 0
+  status:
+    type: enum
+    values: [planned, active, closed]
+    required: true
+    default: planned
+    length: 20
+relations:
+  owner:
+    type: many_to_one
+    target: erp.Employee
+    required: true
+  milestones:
+    type: one_to_many
+    target: erp.Milestone
+    mapped_by: project
+constraints:
+  unique:
+    - [code]
+  check:
+    - field: budget
+      op: gte
+      value: 0
