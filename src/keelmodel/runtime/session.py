@@ -91,8 +91,12 @@ class KeelModel:
                 self._commit(session)
             except IntegrityError as exc:
                 raise ConflictError(f"failed to create {resource}: {exc.orig}") from exc
-            session.refresh(instance)
-            return self._project(model, instance)
+            allowed = self._read_allowed_columns(resource, context, model)
+            session.refresh(instance, attribute_names=sorted(allowed) if allowed else None)
+            return self._project(
+                model, instance, resource=resource, context=context,
+                allowed=allowed,
+            )
 
     def get(
         self,
@@ -106,17 +110,21 @@ class KeelModel:
         model = self._model(resource)
         definition = self._definition(resource)
         coercer = self._field_coercer(definition)
+        allowed = self._read_allowed_columns(resource, context, model)
         with self._session(context) as session:
-            instance = self._fetch(session, model, definition, key, coercer)
+            instance = self._fetch(
+                session, model, definition, key, coercer, allowed
+            )
             if instance is None:
                 raise NotFoundError(f"{resource} {key!r} was not found")
             if self.authz and not self.authz.record_allowed(
-                Operation.READ, resource, context, instance
+                Operation.READ, resource, context, instance,
+                allowed_columns=allowed,
             ):
                 raise PermissionDenied(f"read on {resource} {key!r}: record-level deny")
             return self._project(
                 model, instance, include_private=include_private,
-                resource=resource, context=context,
+                resource=resource, context=context, allowed=allowed,
             )
 
     def update(
@@ -128,12 +136,16 @@ class KeelModel:
         model = self._model(resource)
         definition = self._definition(resource)
         coercer = self._field_coercer(definition)
+        allowed = self._read_allowed_columns(resource, context, model)
         with self._session(context) as session:
-            instance = self._fetch(session, model, definition, key, coercer)
+            instance = self._fetch(
+                session, model, definition, key, coercer, allowed
+            )
             if instance is None:
                 raise NotFoundError(f"{resource} {key!r} was not found")
             if self.authz and not self.authz.record_allowed(
-                Operation.UPDATE, resource, context, instance
+                Operation.UPDATE, resource, context, instance,
+                allowed_columns=allowed,
             ):
                 raise PermissionDenied(f"update on {resource} {key!r}: record-level deny")
             self._assign(instance, definition, changes)
@@ -141,8 +153,11 @@ class KeelModel:
                 self._commit(session)
             except IntegrityError as exc:
                 raise ConflictError(f"failed to update {resource}: {exc.orig}") from exc
-            session.refresh(instance)
-            return self._project(model, instance, resource=resource, context=context)
+            session.refresh(instance, attribute_names=sorted(allowed) if allowed else None)
+            return self._project(
+                model, instance, resource=resource, context=context,
+                allowed=allowed,
+            )
 
     def delete(self, resource: str, key: Any, context: OperationContext) -> None:
         if self.authz:
@@ -150,12 +165,16 @@ class KeelModel:
         model = self._model(resource)
         definition = self._definition(resource)
         coercer = self._field_coercer(definition)
+        allowed = self._read_allowed_columns(resource, context, model)
         with self._session(context) as session:
-            instance = self._fetch(session, model, definition, key, coercer)
+            instance = self._fetch(
+                session, model, definition, key, coercer, allowed
+            )
             if instance is None:
                 raise NotFoundError(f"{resource} {key!r} was not found")
             if self.authz and not self.authz.record_allowed(
-                Operation.DELETE, resource, context, instance
+                Operation.DELETE, resource, context, instance,
+                allowed_columns=allowed,
             ):
                 raise PermissionDenied(f"delete on {resource} {key!r}: record-level deny")
             session.delete(instance)
@@ -177,8 +196,21 @@ class KeelModel:
             self.authz.check(Operation.QUERY, resource, context)
         model = self._model(resource)
         definition = self._definition(resource)
+        allowed = self._read_allowed_columns(resource, context, model)
+        self._check_field_capability(
+            resource, context, "filter", _filter_fields(filters)
+        )
+        self._check_field_capability(
+            resource, context, "order", [o.lstrip("-") for o in order or []]
+        )
         statement = select(model)
         count_statement = select(func.count()).select_from(model)
+        if allowed is not None:
+            from sqlalchemy.orm import load_only
+
+            statement = statement.options(
+                load_only(*[getattr(model, c) for c in allowed])
+            )
         if self.authz:
             authz_filter = self.authz.record_filter(
                 resource, context, model, self._field_coercer(definition)
@@ -209,7 +241,10 @@ class KeelModel:
             rows = session.scalars(statement).all()
         return Page(
             tuple(
-                self._project(model, row, resource=resource, context=context)
+                self._project(
+                    model, row, resource=resource, context=context,
+                    allowed=allowed,
+                )
                 for row in rows
             ),
             total,
@@ -263,11 +298,28 @@ class KeelModel:
         definition: ModelDefinition,
         key: Any,
         coercer: Any,
+        allowed: set[str] | None = None,
     ) -> Any:
         pk_fields = definition.primary_key_fields
-        if len(pk_fields) == 1:
-            return session.get(model, coercer(pk_fields[0], key))
-        return session.get(model, self._composite_key(pk_fields, key, coercer))
+        pk_value = (
+            coercer(pk_fields[0], key)
+            if len(pk_fields) == 1
+            else self._composite_key(pk_fields, key, coercer)
+        )
+        if allowed is None:
+            return session.get(model, pk_value)
+        # Read-denied columns must not be selected into memory.
+        from sqlalchemy.orm import load_only
+
+        pk_values = pk_value if isinstance(pk_value, tuple) else (pk_value,)
+        where = [
+            getattr(model, name) == value
+            for name, value in zip(pk_fields, pk_values)
+        ]
+        stmt = select(model).where(*where).options(
+            load_only(*[getattr(model, c) for c in allowed])
+        )
+        return session.scalars(stmt).first()
 
     def _commit(self, session: Session) -> None:
         try:
@@ -371,6 +423,38 @@ class KeelModel:
                 raise ValidationError(f"primary key field {name!r} cannot be updated")
             setattr(instance, name, deserialize_value(field, value))
 
+    def _read_allowed_columns(
+        self, resource: str, context: OperationContext, model: Any
+    ) -> set[str] | None:
+        """Columns allowed to reach application memory, or None for all.
+        Read-denied fields are never selected (contract §6)."""
+        if not self.authz:
+            return None
+        denied = self.authz.field_capability(
+            resource, context, "read", Operation.READ
+        )
+        if not denied:
+            return None
+        return {c.name for c in model.__table__.columns if c.name not in denied}
+
+    def _check_field_capability(
+        self,
+        resource: str,
+        context: OperationContext,
+        mode: str,
+        fields: list[str],
+    ) -> None:
+        if not fields or not self.authz:
+            return
+        denied = self.authz.field_capability(
+            resource, context, mode, Operation.QUERY
+        )
+        for name in fields:
+            if name in denied:
+                raise PermissionDenied(
+                    f"query on {resource}: {mode} on field {name!r} denied"
+                )
+
     def _project(
         self,
         model: Any,
@@ -378,11 +462,13 @@ class KeelModel:
         include_private: bool = False,
         resource: str | None = None,
         context: OperationContext | None = None,
+        allowed: set[str] | None = None,
     ) -> dict[str, Any]:
         data = {
             column.name: getattr(instance, column.name)
             for column in instance.__table__.columns
-            if include_private or not column.name.startswith("_")
+            if (include_private or not column.name.startswith("_"))
+            and (allowed is None or column.name in allowed)
         }
         if self.authz and resource and context:
             data = self.authz.apply_read_projection(resource, context, data)
@@ -410,6 +496,18 @@ class KeelModel:
 
 def _all_resources(registry: ModuleRegistry) -> list[str]:
     return list(registry._all_models)
+
+
+def _filter_fields(expression: dict[str, Any] | None) -> list[str]:
+    """Field names referenced by a filter expression (all/any recursion)."""
+    if not expression:
+        return []
+    if set(expression) == {"all"}:
+        return [f for c in expression["all"] for f in _filter_fields(c)]
+    if set(expression) == {"any"}:
+        return [f for c in expression["any"] for f in _filter_fields(c)]
+    field = expression.get("field")
+    return [field] if isinstance(field, str) else []
 
 
 def _is_check_violation(exc: OperationalError) -> bool:

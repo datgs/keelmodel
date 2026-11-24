@@ -56,12 +56,13 @@ def _validate_statement(stmt: Any, index: int) -> None:
                 raise PolicyError(f"statement {index}: field names must be strings")
             if isinstance(spec, bool):
                 continue
-            if isinstance(spec, dict) and spec and set(spec) <= {"read", "write"} \
-                    and all(isinstance(v, bool) for v in spec.values()):
+            if isinstance(spec, dict) and spec and set(spec) <= {
+                "read", "write", "filter", "order"
+            } and all(isinstance(v, bool) for v in spec.values()):
                 continue
             raise PolicyError(
                 f"statement {index}: fields[{name!r}] must be a boolean or "
-                "a mapping of read/write booleans"
+                "a mapping of read/write/filter/order booleans"
             )
 
 

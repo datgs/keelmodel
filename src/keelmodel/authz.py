@@ -43,9 +43,11 @@ class AuthorizationProvider:
         )
         allowed = False
         for stmt in self.statements:
-            # `fields` statements constrain field access only; they do
-            # not gate the operation itself.
-            if "fields" in stmt:
+            # `fields` on a deny constrains field access only; it does
+            # not gate the operation itself. An allow carrying `fields`
+            # still grants its actions (fields only narrow what is
+            # visible/writable inside that grant).
+            if stmt["effect"] == "deny" and "fields" in stmt:
                 continue
             if not _matches_without_record(stmt, request):
                 continue
@@ -64,10 +66,15 @@ class AuthorizationProvider:
         resource: str,
         context: OperationContext,
         instance: Any,
+        allowed_columns: set[str] | None = None,
     ) -> bool:
+        # allowed_columns=None → every column may be read; otherwise
+        # read-denied columns are never accessed (they are not selected
+        # into the instance either, so getattr would lazy-load them).
         record = {
             col.name: getattr(instance, col.name)
             for col in instance.__table__.columns
+            if allowed_columns is None or col.name in allowed_columns
         }
         request = PolicyRequest(
             action=operation.value,
@@ -76,9 +83,26 @@ class AuthorizationProvider:
             attributes=context.attributes,
             record=record,
         )
-        # `fields` statements constrain field access, not record access.
-        statements = [s for s in self.statements if "fields" not in s]
+        # deny `fields` statements constrain field access, not record
+        # access; allow statements with `fields` still grant actions.
+        statements = [
+            s for s in self.statements
+            if not (s["effect"] == "deny" and "fields" in s)
+        ]
         return evaluate(statements, request).decision == Decision.ALLOW
+
+    def field_capability(
+        self,
+        resource: str,
+        context: OperationContext,
+        mode: str,
+        operation: Operation,
+    ) -> set[str]:
+        """Fields denied for `mode` (read/write/filter/order) for this
+        subject. Empty set when field rules are not enabled."""
+        if not self.enable_field_rules:
+            return set()
+        return self._denied_fields(resource, context, mode, operation)
 
     def record_filter(
         self,
@@ -174,7 +198,10 @@ class AuthorizationProvider:
                     if not spec:
                         denied.add(name)
                 elif isinstance(spec, dict):
-                    if not spec.get(mode, True):
+                    # read/write default to allowed when a field is named;
+                    # filter/order require an explicit grant (fail closed).
+                    default = mode in {"read", "write"}
+                    if not spec.get(mode, default):
                         denied.add(name)
         return denied
 
@@ -183,7 +210,7 @@ class AuthorizationProvider:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         allows, denies = [], []
         for stmt in self.statements:
-            if "condition" not in stmt or "fields" in stmt:
+            if "condition" not in stmt or (stmt["effect"] == "deny" and "fields" in stmt):
                 continue
             request = PolicyRequest(
                 action="query",

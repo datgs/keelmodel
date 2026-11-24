@@ -72,7 +72,7 @@ def test_bad_field_prefix_rejected():
 
 
 def test_fields_spec_validated():
-    with pytest.raises(PolicyError, match="read/write booleans"):
+    with pytest.raises(PolicyError, match="read/write/filter/order booleans"):
         parse_policy(
             {
                 "version": 1,

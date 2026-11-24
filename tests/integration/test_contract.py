@@ -39,6 +39,7 @@ def _defs(suffix: str):
             "fields": {
                 "id": {"type": "uuid", "primary_key": True, "default": "uuid4"},
                 "code": {"type": "text", "required": True, "length": 40},
+                "tax_id": {"type": "text", "length": 40},
                 "at": {"type": "datetime"},
             },
             "constraints": {"unique": [["code"]]},
@@ -347,6 +348,111 @@ def test_authz_record_condition(backend, tmp_path):
         km.get("contract.Parent", other["id"], STAFF)
     with pytest.raises(PermissionDenied):
         km.create("contract.Parent", {"code": "X"}, STAFF)
+
+
+def _field_authz_km(db_url: str, tmp_path) -> KeelModel:
+    suffix = uuid.uuid4().hex[:8]
+    parent, child = _defs(suffix)
+    registry = ModuleRegistry()
+    registry.register(
+        ModuleDefinition(
+            name="contract",
+            version="1.0.0",
+            requires=(),
+            exports=("Parent", "Child"),
+            models_path="models",
+        ),
+        (parent, child),
+    )
+    policy = tmp_path / f"fpol_{suffix}.yaml"
+    policy.write_text(
+        yaml.dump(
+            {
+                "version": 1,
+                "statements": [
+                    {
+                        "effect": "allow",
+                        "actions": ["*"],
+                        "resources": ["contract.*"],
+                        "subjects": ["role:admin"],
+                    },
+                    {
+                        "effect": "allow",
+                        "actions": ["read", "query"],
+                        "resources": ["contract.Parent"],
+                        "subjects": ["role:staff"],
+                        # staff may read (not tax_id) and may filter only
+                        # on `code` — filter/order require explicit grant
+                        "fields": {
+                            "code": {"read": True, "filter": True},
+                            "tax_id": False,
+                        },
+                    },
+                ],
+            }
+        )
+    )
+    authz = AuthorizationProvider(str(policy), enable_field_rules=True)
+    km = KeelModel(db_url, registry, authz=authz)
+    km._all_mapped["contract.Parent"].__table__.create(
+        km.engine, checkfirst=True
+    )
+    return km
+
+
+def test_field_denied_not_selected(backend, tmp_path):
+    """Read-denied columns must not appear in the SELECT statement."""
+    _, url = backend
+    km = _field_authz_km(url, tmp_path)
+    km.create("contract.Parent", {"code": "c1", "tax_id": "T"}, ADMIN)
+
+    statements = []
+    from sqlalchemy import event
+
+    @event.listens_for(km.engine, "before_cursor_execute")
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    row = km.get(
+        "contract.Parent",
+        km.query("contract.Parent", STAFF).items[0]["id"],
+        STAFF,
+    )
+    assert "tax_id" not in row
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert selects, "expected SELECT statements"
+    for sql in selects:
+        assert "tax_id" not in sql, f"denied column was selected: {sql}"
+
+
+def test_filter_order_denied_fields(backend, tmp_path):
+    """Filtering/ordering on fields without explicit grant is denied."""
+    _, url = backend
+    km = _field_authz_km(url, tmp_path)
+    km.create("contract.Parent", {"code": "c1", "tax_id": "T"}, ADMIN)
+
+    # filter on granted field works
+    page = km.query(
+        "contract.Parent",
+        STAFF,
+        filters={"field": "code", "op": "eq", "value": "c1"},
+    )
+    assert page.total == 1
+
+    # filter on a field named in fields rules without `filter: true` fails
+    # closed — even though the field itself is readable elsewhere. tax_id
+    # is denied entirely.
+    with pytest.raises(PermissionDenied):
+        km.query(
+            "contract.Parent",
+            STAFF,
+            filters={"field": "tax_id", "op": "eq", "value": "T"},
+        )
+    with pytest.raises(PermissionDenied):
+        km.query("contract.Parent", STAFF, order=["tax_id"])
+    # order on a field with no explicit `order` grant also fails closed
+    with pytest.raises(PermissionDenied):
+        km.query("contract.Parent", STAFF, order=["code"])
 
 
 def test_audit_same_transaction(backend, tmp_path):
