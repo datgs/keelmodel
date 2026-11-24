@@ -12,6 +12,7 @@ def generate_migration_draft(
     revision: str = "0001",
     down_revision: str | None = None,
     resolve: Any = None,
+    overwrite: bool = False,
 ) -> Path:
     """Generate a reviewable Alembic migration draft.
 
@@ -23,6 +24,10 @@ def generate_migration_draft(
     if any(d.relations for d in definitions) and resolve is None:
         raise ValueError("migrations for related models require a resolver")
     path = Path(output_path)
+    if path.exists() and not overwrite:
+        raise FileExistsError(
+            f"{path} exists; pass overwrite=True to replace it"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [
@@ -94,10 +99,16 @@ def _column_spec(field: Any) -> str:
             default = ', server_default=sa.text("CURRENT_TIMESTAMP")'
         elif field.default == "uuid4":
             default = ""
+        elif isinstance(field.default, bool):
+            # server_default must be a SQL literal, not a Python value
+            default = f', server_default=sa.text({"true" if field.default else "false"!r})'
+        elif isinstance(field.default, (int, float)) or hasattr(
+            field.default, "as_integer_ratio"
+        ):
+            default = f', server_default=sa.text({str(field.default)!r})'
         elif isinstance(field.default, str):
-            default = f", server_default={field.default!r}"
-        else:
-            default = f", server_default={field.default!r}"
+            escaped = field.default.replace("'", "''")
+            default = f', server_default=sa.text({"\'" + escaped + "\'"!r})'
     return (
         f'sa.Column("{field.name}", {sa_type}, nullable={nullable}, '
         f"primary_key={pk}{default})"
