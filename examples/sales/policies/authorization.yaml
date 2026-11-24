@@ -7,6 +7,27 @@ statements:
     reason: admins have full access to sales resources
   - effect: allow
     actions: [read, query]
-    resources: ["sales.*"]
+    resources: ["sales.Customer", "sales.InvoiceLine"]
     subjects: ["role:viewer"]
-    reason: viewers can read and query sales resources
+    reason: viewers can read customers and invoice lines
+  - effect: allow
+    actions: [read, query]
+    resources: ["sales.Invoice"]
+    subjects: ["role:viewer"]
+    # record-level authz: viewers only see submitted/paid invoices,
+    # enforced in SQL for query and per-record for get
+    condition:
+      field: record.status
+      op: in
+      value: [submitted, paid]
+    reason: viewers can read submitted or paid invoices
+  # field-level authz: tax_id is hidden from viewers on read and
+  # rejected on write; `fields` statements constrain field access only
+  # and do not gate the operation. Requires enable_field_rules=True.
+  - effect: deny
+    actions: ["*"]
+    resources: ["sales.Customer"]
+    subjects: ["role:viewer"]
+    fields:
+      tax_id: false
+    reason: tax identifiers are staff-only

@@ -43,6 +43,10 @@ class AuthorizationProvider:
         )
         allowed = False
         for stmt in self.statements:
+            # `fields` statements constrain field access only; they do
+            # not gate the operation itself.
+            if "fields" in stmt:
+                continue
             if not _matches_without_record(stmt, request):
                 continue
             if stmt["effect"] == "deny":
@@ -72,7 +76,9 @@ class AuthorizationProvider:
             attributes=context.attributes,
             record=record,
         )
-        return evaluate(self.statements, request).decision == Decision.ALLOW
+        # `fields` statements constrain field access, not record access.
+        statements = [s for s in self.statements if "fields" not in s]
+        return evaluate(statements, request).decision == Decision.ALLOW
 
     def record_filter(
         self,
@@ -177,7 +183,7 @@ class AuthorizationProvider:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         allows, denies = [], []
         for stmt in self.statements:
-            if "condition" not in stmt:
+            if "condition" not in stmt or "fields" in stmt:
                 continue
             request = PolicyRequest(
                 action="query",
@@ -234,18 +240,19 @@ class AuthorizationProvider:
                     f"policy record field {name!r} is not a model column"
                 )
             column = getattr(model, name)
-            value = coercer(name, condition["value"])
             op = condition["op"]
+            if op == "in":
+                raw = condition["value"]
+                if not isinstance(raw, (list, tuple)):
+                    raise ConfigurationError(
+                        f"policy 'in' on {name!r} requires a list value"
+                    )
+                return column.in_([coercer(name, v) for v in raw])
+            value = coercer(name, condition["value"])
             if op == "eq":
                 return column == value
             if op == "ne":
                 return column != value
-            if op == "in":
-                if not isinstance(value, (list, tuple)):
-                    raise ConfigurationError(
-                        f"policy 'in' on {name!r} requires a list value"
-                    )
-                return column.in_([coercer(name, v) for v in value])
             if op == "contains":
                 return column.like(f"%{value}%")
             if op == "lt":

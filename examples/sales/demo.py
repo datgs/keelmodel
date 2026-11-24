@@ -30,7 +30,9 @@ def build() -> KeelModel:
     registry = ModuleRegistry()
     registry.register(module, models)
 
-    authz = AuthorizationProvider(ROOT / "policies" / "authorization.yaml")
+    authz = AuthorizationProvider(
+        ROOT / "policies" / "authorization.yaml", enable_field_rules=True
+    )
     audit = AuditExtension(redact_fields={"email"})
     km = KeelModel(DB_URL, registry, authz=authz, audit=audit)
     if os.environ.get("KEELMODEL_RESET") == "1":
@@ -84,15 +86,94 @@ def main() -> int:
 
     try:
         km.get("sales.Invoice", invoice["id"], viewer)
-        print("viewer read: allowed")
+        print("viewer read draft invoice: allowed")
     except Exception as exc:
-        print("viewer read:", type(exc).__name__, exc)
+        print("viewer read draft invoice:", type(exc).__name__, exc)
+
+    paid = km.update("sales.Invoice", invoice["id"], {"status": "paid"}, admin)
+    visible = km.query("sales.Invoice", viewer)
+    print(
+        "viewer query (record-level filter):",
+        visible.total,
+        "invoice(s) — only submitted/paid are visible",
+    )
+    fetched = km.get("sales.Invoice", paid["id"], viewer)
+    print("viewer read paid invoice: allowed, status =", fetched["status"])
+
+    customer = km.update(
+        "sales.Customer", customer["id"], {"tax_id": "TAX-42"}, admin
+    )
+    seen = km.get("sales.Customer", customer["id"], viewer)
+    print(
+        "viewer customer fields (field-level authz):",
+        sorted(seen.keys()),
+        "— tax_id omitted",
+    )
 
     try:
         km.create("sales.Invoice", {"number": "X", "customer_id": str(customer["id"])}, viewer)
         print("viewer create: allowed")
     except Exception as exc:
         print("viewer create:", type(exc).__name__, exc)
+
+    # transaction(): all-or-nothing — a validation error mid-block rolls
+    # back everything done inside the same transaction.
+    try:
+        with km.transaction(admin):
+            km.create(
+                "sales.InvoiceLine",
+                {
+                    "description": "T1",
+                    "quantity": 1,
+                    "unit_price": "1",
+                    "invoice_id": str(invoice["id"]),
+                },
+                admin,
+            )
+            km.create(
+                "sales.InvoiceLine",
+                {"description": "T2", "quantity": "bad", "invoice_id": str(invoice["id"])},
+                admin,
+            )
+    except Exception as exc:
+        print("transaction rolled back:", type(exc).__name__)
+    inside = km.query(
+        "sales.InvoiceLine",
+        admin,
+        filters={"field": "invoice_id", "op": "eq", "value": str(invoice["id"])},
+    )
+    print("lines after failed tx:", inside.total, "(only the earlier demo line)")
+
+    # Generated artifacts: embed the YAML and expose definition() +
+    # build_model() — the same mapped class the SDK uses.
+    sys.path.insert(0, str(ROOT / "generated"))
+    import invoice as gen_invoice
+
+    gen_def = gen_invoice.definition()
+    registry = ModuleRegistry()
+    registry.register(
+        load_module(ROOT / "keelmodule.yaml"),
+        [load_model(p) for p in sorted((ROOT / "models").glob("*.yaml"))],
+    )
+    gen_model = gen_invoice.build_model(
+        registry.get_model_any, km.engine.dialect.name
+    )
+    print(
+        "generated artifact:",
+        gen_def.resource,
+        "→ mapped table",
+        gen_model.__table__.name,
+    )
+
+    # Migration drafts are reviewable output, never applied automatically.
+    from keelmodel.migrations import generate_migration_draft
+
+    draft = generate_migration_draft(
+        [load_model(p) for p in sorted((ROOT / "models").glob("*.yaml"))],
+        ROOT / "migrations" / "0001_sales.py",
+        resolve=lambda r: {m.resource: m for m in km._definitions.values()}.get(r),
+    )
+    print("migration draft:", draft)
 
     started = time.perf_counter()
     items = [{"name": f"C{i}", "email": f"https://c{i}.example"} for i in range(500)]

@@ -10,6 +10,8 @@ fields:
     required: true
   email:
     type: url
+  tax_id:
+    type: text
 constraints:
   unique:
     - [email]

@@ -75,8 +75,10 @@ def map_model(
         Index(f"{model.table}_{'_'.join(group)}_idx", *group)
         for group in model.indexes
     )
-    if table_args:
-        attributes["__table_args__"] = table_args
+    # Idempotent re-mapping: mapping the same definition twice (e.g. via a
+    # generated build_model call) reuses the existing Table in shared
+    # Base.metadata instead of failing on duplicate definition.
+    attributes["__table_args__"] = (*table_args, {"extend_existing": True})
     for field in model.fields:
         args = [_column_type(field, dialect)]
         attributes["__annotations__"][field.name] = Mapped[Any]
