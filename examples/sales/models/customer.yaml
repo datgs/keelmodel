@@ -10,6 +10,7 @@ fields:
     required: true
   email:
     type: url
+    length: 320
   tax_id:
     type: text
 constraints:

@@ -87,6 +87,17 @@ Out of scope:
 - [x] Generated artifacts usable: files embed the model YAML and expose
       definition() + build_model(resolve, dialect) → live ORM class via
       map_model. Acceptance test proves end-to-end.
+- [x] Field auth depth complete: denied columns never SELECTed
+      (load_only + refresh attr_names), filter/order are separate
+      explicit grants, deny+fields doesn't gate operations.
+- [x] Migration drafts execute: server_default renders sa.text literals;
+      upgrade/downgrade proven via Alembic Operations on isolated
+      SQLite; overwrite=False by default.
+- [x] Demo walkthrough safe + verified: SQLite temp default, Postgres
+      additive-only (run-id namespaced, re-runnable), draft→tmpdir,
+      audit+redaction read back, generated class used in real query;
+      subprocess acceptance test asserts all expected outcomes.
+- [x] email length: 320 for MySQL unique constraint compatibility.
 
 **P2 scope note**: plan declared PostgreSQL-only, but code/tests now prove
 MySQL + SQLite via the same abstraction. Keeping multi-dialect as a v1

@@ -65,9 +65,14 @@ uv run pytest                        # unit tests
 KEELMODEL_TEST_DB=postgresql://…     # + Postgres integration
 KEELMODEL_TEST_MYSQL=mysql+pymysql://…  # + MySQL integration
 
-# demos use the public SDK API only; any SQLAlchemy URL works
-KEELMODEL_RESET=1 KEELMODEL_DB=sqlite:///demo.db \
-    uv run python examples/sales/demo.py
+# sales walkthrough: SQLite temp DB by default — safe, self-contained
+uv run python examples/sales/demo.py
+
+# same walkthrough on a dedicated Postgres test DB (additive only,
+# records namespaced per run — safe to re-run)
+KEELMODEL_DEMO_PG=postgresql://… uv run python examples/sales/demo.py --postgres
+
+# erp stress harness: requires an explicit opt-in reset on a dedicated DB
 KEELMODEL_RESET=1 KEELMODEL_DB=postgresql://… \
     uv run python examples/erp/stress.py
 ```
