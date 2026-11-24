@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import create_engine, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from keelmodel.authz import AuthorizationProvider
@@ -39,6 +39,13 @@ class KeelModel:
         self.authz = authz
         self.audit = audit
         self.engine = create_engine(database_url)
+        if self.engine.dialect.name == "sqlite":
+            from sqlalchemy import event
+
+            @event.listens_for(self.engine, "connect")
+            def _fk_pragma(dbapi_conn: Any, _record: Any) -> None:
+                dbapi_conn.execute("PRAGMA foreign_keys=ON")
+
         self.session_factory = sessionmaker(self.engine, expire_on_commit=False)
         if audit is not None:
             audit.install(self.session_factory)
@@ -252,10 +259,19 @@ class KeelModel:
         return session.get(model, self._composite_key(pk_fields, key, coercer))
 
     def _commit(self, session: Session) -> None:
-        if session is getattr(self._tx, "session", None):
-            session.flush()
-        else:
-            session.commit()
+        try:
+            if session is getattr(self._tx, "session", None):
+                session.flush()
+            else:
+                session.commit()
+        except IntegrityError:
+            raise
+        except OperationalError as exc:
+            # MySQL reports CHECK violations as OperationalError (3819),
+            # not IntegrityError — normalize to the same contract.
+            if _is_check_violation(exc):
+                raise ConflictError(f"check constraint violated: {exc.orig}") from exc
+            raise
 
     def _field_coercer(self, definition: ModelDefinition):
         fields = {f.name: f for f in definition.fields}
@@ -373,3 +389,13 @@ class KeelModel:
 
 def _all_resources(registry: ModuleRegistry) -> list[str]:
     return list(registry._all_models)
+
+
+def _is_check_violation(exc: OperationalError) -> bool:
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        return False
+    args = getattr(orig, "args", ())
+    if args and args[0] == 3819:
+        return True
+    return "check constraint" in str(orig).lower()

@@ -84,9 +84,17 @@ Out of scope:
 
 **P2 scope note**: plan declared PostgreSQL-only, but code/tests now prove
 MySQL + SQLite via the same abstraction. Keeping multi-dialect as a v1
-capability (it cost dialect-aware type mapping + two real bug fixes).
-Compatibility contract: UUID/text/datetime/enum/relations work across all
-three; JSON-based types map to JSONB on Postgres only.
+capability (it cost dialect-aware type mapping + several real bug fixes).
+
+**Dialect compatibility contract** (proven by shared test_contract suite,
+12 cases × 3 backends):
+- Identical behavior: CRUD, unique/FK/check violations → ConflictError,
+  transaction + bulk atomicity, record-condition authz, audit writes,
+  strict input validation, filter/pagination, enum validation, UUID PKs.
+- Accepted differences: SQLite + MySQL DATETIME columns do not preserve
+  tzinfo on read (values are stored/returned as naive UTC); MySQL requires
+  `length` on text/enum fields that are indexed or unique; JSON-typed
+  fields map to JSONB on Postgres and JSON elsewhere.
 - [ ] Sync persistence API and atomic bulk.
 - [ ] Security review, then keelpolicy and core auth.
 - [ ] Alembic drafts and representative module acceptance.

@@ -39,7 +39,11 @@ page = km.query("sales.Invoice", ctx,
 - **Sync, typed SDK.** `create / get / update / delete / query / bulk` with
   atomic bulk writes, typed errors, and limit/offset paging.
 - **Multi-dialect.** Same model code runs on PostgreSQL, MySQL, and SQLite;
-  dialect-specific storage is handled internally.
+  dialect-specific storage is handled internally. Verified by a shared
+  contract suite (CRUD, FK/unique/check violations, transactions, atomic
+  bulk, record-level authz) that runs unchanged on all three. Accepted
+  differences: `datetime` reads are naive on SQLite/MySQL, and text/enum
+  fields need `length` when indexed on MySQL.
 - **`keelpolicy` authorization.** Deny-overrides YAML policy engine,
   application-owned, no DB dependency — reusable outside KeelModel.
 - **Same-transaction audit.** Optional extension records every mutation with
