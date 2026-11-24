@@ -7,6 +7,7 @@ Usage:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import time
@@ -24,7 +25,7 @@ ROOT = Path(__file__).parent
 DB_URL = os.environ.get("KEELMODEL_DB")
 
 
-def build() -> KeelModel:
+def build() -> tuple[KeelModel, ModuleRegistry]:
     module = load_module(ROOT / "keelmodule.yaml")
     models = [load_model(p) for p in sorted((ROOT / "models").glob("*.yaml"))]
     registry = ModuleRegistry()
@@ -40,7 +41,7 @@ def build() -> KeelModel:
         audit.table.drop(km.engine, checkfirst=True)
     Base.metadata.create_all(km.engine)
     audit.create_all(km.engine)
-    return km
+    return km, registry
 
 
 def main() -> int:
@@ -48,7 +49,7 @@ def main() -> int:
         print("set KEELMODEL_DB", file=sys.stderr)
         return 2
 
-    km = build()
+    km, registry = build()
     admin = OperationContext(subject={"roles": ["admin"]}, attributes={})
     viewer = OperationContext(subject={"roles": ["viewer"]}, attributes={})
 
@@ -145,16 +146,14 @@ def main() -> int:
     print("lines after failed tx:", inside.total, "(only the earlier demo line)")
 
     # Generated artifacts: embed the YAML and expose definition() +
-    # build_model() — the same mapped class the SDK uses.
-    sys.path.insert(0, str(ROOT / "generated"))
-    import invoice as gen_invoice
+    # build_model(resolve, dialect) — the same mapped class the SDK uses.
+    spec = importlib.util.spec_from_file_location(
+        "gen_invoice", ROOT / "generated" / "invoice.py"
+    )
+    gen_invoice = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen_invoice)
 
     gen_def = gen_invoice.definition()
-    registry = ModuleRegistry()
-    registry.register(
-        load_module(ROOT / "keelmodule.yaml"),
-        [load_model(p) for p in sorted((ROOT / "models").glob("*.yaml"))],
-    )
     gen_model = gen_invoice.build_model(
         registry.get_model_any, km.engine.dialect.name
     )
@@ -171,9 +170,14 @@ def main() -> int:
     draft = generate_migration_draft(
         [load_model(p) for p in sorted((ROOT / "models").glob("*.yaml"))],
         ROOT / "migrations" / "0001_sales.py",
-        resolve=lambda r: {m.resource: m for m in km._definitions.values()}.get(r),
+        resolve=registry.get_model_any,
     )
     print("migration draft:", draft)
+
+    # delete: removing the demo invoice line (FK restrict protects the
+    # parent invoice).
+    km.delete("sales.InvoiceLine", line["id"], admin)
+    print("deleted line", line["id"])
 
     started = time.perf_counter()
     items = [{"name": f"C{i}", "email": f"https://c{i}.example"} for i in range(500)]

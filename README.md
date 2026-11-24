@@ -57,14 +57,19 @@ page = km.query("sales.Invoice", ctx,
 | ---- | ------- |
 | `src/keelmodel/` | schema, generation, registry, runtime, extensions |
 | `src/keelpolicy/` | standalone YAML policy parser + evaluator |
-| `examples/sales/` | small module: Customer → Invoice → InvoiceLine |
+| `examples/sales/` | full-feature walkthrough: CRUD, relations, constraints, transaction, record- and field-level authz, generated artifacts, migration draft |
 | `examples/erp/` | heavier module: departments, self-refs, M2M junctions, milestones — with a stress harness |
 
 ```bash
 uv run pytest                        # unit tests
 KEELMODEL_TEST_DB=postgresql://…     # + Postgres integration
 KEELMODEL_TEST_MYSQL=mysql+pymysql://…  # + MySQL integration
-KEELMODEL_DB=… uv run python examples/erp/stress.py
+
+# demos use the public SDK API only; any SQLAlchemy URL works
+KEELMODEL_RESET=1 KEELMODEL_DB=sqlite:///demo.db \
+    uv run python examples/sales/demo.py
+KEELMODEL_RESET=1 KEELMODEL_DB=postgresql://… \
+    uv run python examples/erp/stress.py
 ```
 
 ## Status
