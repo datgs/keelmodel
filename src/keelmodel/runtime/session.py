@@ -114,7 +114,10 @@ class KeelModel:
                 Operation.READ, resource, context, instance
             ):
                 raise PermissionDenied(f"read on {resource} {key!r}: record-level deny")
-            return self._project(model, instance, include_private=include_private)
+            return self._project(
+                model, instance, include_private=include_private,
+                resource=resource, context=context,
+            )
 
     def update(
         self, resource: str, key: Any, changes: dict[str, Any], context: OperationContext
@@ -139,7 +142,7 @@ class KeelModel:
             except IntegrityError as exc:
                 raise ConflictError(f"failed to update {resource}: {exc.orig}") from exc
             session.refresh(instance)
-            return self._project(model, instance)
+            return self._project(model, instance, resource=resource, context=context)
 
     def delete(self, resource: str, key: Any, context: OperationContext) -> None:
         if self.authz:
@@ -204,7 +207,15 @@ class KeelModel:
         with self._session(context) as session:
             total = session.scalar(count_statement) or 0
             rows = session.scalars(statement).all()
-        return Page(tuple(self._project(model, row) for row in rows), total, limit, offset)
+        return Page(
+            tuple(
+                self._project(model, row, resource=resource, context=context)
+                for row in rows
+            ),
+            total,
+            limit,
+            offset,
+        )
 
     def bulk(
         self, resource: str, items: list[dict[str, Any]], context: OperationContext
@@ -360,12 +371,22 @@ class KeelModel:
                 raise ValidationError(f"primary key field {name!r} cannot be updated")
             setattr(instance, name, deserialize_value(field, value))
 
-    def _project(self, model: Any, instance: Any, include_private: bool = False) -> dict[str, Any]:
-        return {
+    def _project(
+        self,
+        model: Any,
+        instance: Any,
+        include_private: bool = False,
+        resource: str | None = None,
+        context: OperationContext | None = None,
+    ) -> dict[str, Any]:
+        data = {
             column.name: getattr(instance, column.name)
             for column in instance.__table__.columns
             if include_private or not column.name.startswith("_")
         }
+        if self.authz and resource and context:
+            data = self.authz.apply_read_projection(resource, context, data)
+        return data
 
     @contextmanager
     def _session(self, context: OperationContext | None = None) -> Any:

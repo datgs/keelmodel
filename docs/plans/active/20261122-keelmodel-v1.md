@@ -78,9 +78,15 @@ Out of scope:
 - [x] Module boundary: relation to other module's private model requires declared dep; target must be public.
 - [x] Audit: factory-scoped listener (no global leak), no auto-DDL at init, explicit create_all.
 - [x] Migration drafts: revision header, FK columns for relations, unique/index.
-- [ ] Security review of authorization design before enforcement is enabled by default.
-- [ ] Field-level auth enforcement depth (read/filter/order separation).
-- [ ] Generated model classes used by runtime (currently internal map_model).
+- [x] Security review pass on authz: fixed mixed record+subject conditions
+      in SQL filter (crashed with ConfigurationError), added contains/
+      ordering ops to SQL compiler, documented subject trust boundary.
+      Remaining gate: independent review before enabling authz by default.
+- [x] Field-level auth: fields: {name: {read, write}} — read-denied fields
+      are omitted from output, write-denied fields reject input.
+- [x] Generated artifacts usable: files embed the model YAML and expose
+      definition() + build_model(resolve, dialect) → live ORM class via
+      map_model. Acceptance test proves end-to-end.
 
 **P2 scope note**: plan declared PostgreSQL-only, but code/tests now prove
 MySQL + SQLite via the same abstraction. Keeping multi-dialect as a v1

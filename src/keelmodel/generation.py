@@ -22,7 +22,29 @@ _PYTHON_TYPES = {
 }
 
 
-def render_model(model: ModelDefinition) -> str:
+_MODEL_YAML = """
+import yaml
+
+_EMBEDDED_MODEL = yaml.safe_load({yaml_source!r})
+
+
+def definition():
+    from keelmodel.schema import parse_model
+
+    return parse_model(_EMBEDDED_MODEL)
+
+
+def build_model(resolve, dialect: str = "postgresql"):
+    # Build the live SQLAlchemy class for this definition via map_model.
+    # `resolve` maps resource names (e.g. 'sales.Customer') to their mapped
+    # classes - KeelModel already exposes this to generated code.
+    from keelmodel.runtime.models import map_model
+
+    return map_model(definition(), resolve, dialect)
+"""
+
+
+def render_model(model: ModelDefinition, yaml_source: str = "") -> str:
     if any(keyword.iskeyword(field.name) for field in model.fields):
         raise SchemaError(f"{model.resource}: field names must not be Python keywords")
 
@@ -59,16 +81,21 @@ def render_model(model: ModelDefinition) -> str:
         lines.append(f"    {field.name}: {annotation}")
     lines.extend(["", "    __fields__ = ("])
     lines.extend(f'        "{field.name}",' for field in model.fields)
-    lines.extend(["    )", ""])
+    lines.extend(["    )"])
+    if yaml_source:
+        lines.append(_MODEL_YAML.format(yaml_source=yaml_source))
+    lines.append("")
     return "\n".join(lines)
 
 
 def generate_model(source: str | Path, output: str | Path) -> Path:
-    model = load_model(source)
+    source_path = Path(source)
+    yaml_source = source_path.read_text(encoding="utf-8")
+    model = load_model(source_path)
     destination = Path(output)
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / f"{_snake_case(model.name)}.py"
-    target.write_text(render_model(model), encoding="utf-8")
+    target.write_text(render_model(model, yaml_source), encoding="utf-8")
     return target
 
 

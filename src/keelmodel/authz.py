@@ -83,21 +83,29 @@ class AuthorizationProvider:
     ) -> Any | None:
         """SQL fragment limiting query to authorized records, or None.
 
-        Only `record.*` leaves become SQL; subject/attribute clauses were
-        already satisfied by `check`. An allow statement whose condition
-        cannot be translated fails closed via ConfigurationError.
+        Subject/attribute leaves were already satisfied by `check`; only
+        `record.*` leaves are compiled to SQL. A satisfied non-record leaf
+        inside `all` is dropped; inside `any` it makes the branch
+        unconditionally true. Untranslatable residue fails closed via
+        ConfigurationError.
         """
         allow_conds, deny_conds = self._conditions(resource, context)
-        from sqlalchemy import and_, not_, or_
+        from sqlalchemy import and_, false, not_, or_, true
 
+        request = PolicyRequest(
+            action="query", resource=resource,
+            subject=context.subject, attributes=context.attributes,
+        )
         parts = []
         if allow_conds:
-            compiled = [
-                self._compile_condition(cond, model, coercer) for cond in allow_conds
-            ]
+            compiled = []
+            for cond in allow_conds:
+                sql = self._compile_condition(cond, model, coercer, request)
+                compiled.append(sql if sql is not None else true())
             parts.append(or_(*compiled) if len(compiled) > 1 else compiled[0])
         for cond in deny_conds:
-            parts.append(not_(self._compile_condition(cond, model, coercer)))
+            sql = self._compile_condition(cond, model, coercer, request)
+            parts.append(not_(sql) if sql is not None else false())
         if not parts:
             return None
         return and_(*parts)
@@ -105,18 +113,64 @@ class AuthorizationProvider:
     def filter_fields(
         self, operation: Operation, resource: str, context: OperationContext, data: dict[str, Any]
     ) -> dict[str, Any]:
+        """Write-path enforcement: input containing a write-denied field
+        is rejected. `fields` entries accept `false` (deny all) or a map
+        with `read`/`write` booleans (default allow)."""
         if not self.enable_field_rules:
             return data
-        for stmt in self.statements:
-            field_rules = stmt.get("fields")
-            if field_rules is None:
-                continue
-            for field_name, allowed in field_rules.items():
-                if field_name in data and not allowed:
-                    raise PermissionDenied(
-                        f"{operation.value} on {resource}: field {field_name!r} denied"
-                    )
+        write_denied = self._denied_fields(resource, context, "write", operation)
+        for field_name in data:
+            if field_name in write_denied:
+                raise PermissionDenied(
+                    f"{operation.value} on {resource}: field {field_name!r} denied"
+                )
         return data
+
+    def apply_read_projection(
+        self, resource: str, context: OperationContext, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Read-path enforcement: omit read-denied fields from output."""
+        if not self.enable_field_rules:
+            return data
+        read_denied = self._denied_fields(
+            resource, context, "read", Operation.READ
+        )
+        if not read_denied:
+            return data
+        return {k: v for k, v in data.items() if k not in read_denied}
+
+    def _denied_fields(
+        self,
+        resource: str,
+        context: OperationContext,
+        mode: str,
+        operation: Operation,
+    ) -> set[str]:
+        denied: set[str] = set()
+        request = PolicyRequest(
+            action=operation.value,
+            resource=resource,
+            subject=context.subject,
+            attributes=context.attributes,
+        )
+        for stmt in self.statements:
+            rules = stmt.get("fields")
+            if not rules:
+                continue
+            if not _matches_without_record(stmt, request):
+                continue
+            effect = stmt["effect"]
+            for name, spec in rules.items():
+                if effect == "deny":
+                    denied.add(name)
+                    continue
+                if isinstance(spec, bool):
+                    if not spec:
+                        denied.add(name)
+                elif isinstance(spec, dict):
+                    if not spec.get(mode, True):
+                        denied.add(name)
+        return denied
 
     def _conditions(
         self, resource: str, context: OperationContext
@@ -139,19 +193,41 @@ class AuthorizationProvider:
                 denies.append(stmt["condition"])
         return allows, denies
 
-    def _compile_condition(self, condition: dict[str, Any], model: Any, coercer: Any) -> Any:
+    def _compile_condition(
+        self,
+        condition: dict[str, Any],
+        model: Any,
+        coercer: Any,
+        request: PolicyRequest,
+    ) -> Any | None:
+        """Compile to SQL. Returns None when the condition reduced to TRUE
+        after pruning non-record leaves satisfied at check time."""
         from sqlalchemy import and_, or_
 
         if set(condition) == {"all"}:
-            return and_(*[self._compile_condition(c, model, coercer) for c in condition["all"]])
+            parts = []
+            for c in condition["all"]:
+                sql = self._compile_condition(c, model, coercer, request)
+                if sql is not None:
+                    parts.append(sql)
+            if not parts:
+                return None
+            return and_(*parts) if len(parts) > 1 else parts[0]
         if set(condition) == {"any"}:
-            return or_(*[self._compile_condition(c, model, coercer) for c in condition["any"]])
+            parts = []
+            for c in condition["any"]:
+                sql = self._compile_condition(c, model, coercer, request)
+                if sql is None:
+                    return None  # a satisfied leaf makes `any` true
+                parts.append(sql)
+            return or_(*parts) if len(parts) > 1 else parts[0]
         if set(condition) == {"field", "op", "value"}:
             field = condition["field"]
             if not str(field).startswith("record."):
-                raise ConfigurationError(
-                    f"non-record field {field!r} cannot be compiled to SQL"
-                )
+                # Non-record leaf: check() already verified it; a match here
+                # means satisfied → TRUE (None), else the statement would not
+                # have been selected by _matches_without_record.
+                return None
             name = field[len("record."):]
             if not hasattr(model, name):
                 raise ConfigurationError(
@@ -165,7 +241,23 @@ class AuthorizationProvider:
             if op == "ne":
                 return column != value
             if op == "in":
+                if not isinstance(value, (list, tuple)):
+                    raise ConfigurationError(
+                        f"policy 'in' on {name!r} requires a list value"
+                    )
                 return column.in_([coercer(name, v) for v in value])
+            if op == "contains":
+                return column.like(f"%{value}%")
+            if op == "lt":
+                return column < value
+            if op == "lte":
+                return column <= value
+            if op == "gt":
+                return column > value
+            if op == "gte":
+                return column >= value
+            if op == "is_null":
+                return column.is_(None) if value else column.is_not(None)
             raise ConfigurationError(f"policy operator {op!r} cannot be compiled to SQL")
         raise ConfigurationError(f"unsupported policy condition shape: {sorted(condition)}")
 

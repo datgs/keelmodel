@@ -81,6 +81,8 @@ def _eval_field_op(condition: dict[str, Any], request: PolicyRequest) -> bool:
     expected = condition["value"]
 
     actual = _resolve_field(field, request)
+    if op == "is_null":
+        return (actual is None) == bool(expected)
     if actual is None:
         return False
     if op == "eq":
@@ -88,9 +90,17 @@ def _eval_field_op(condition: dict[str, Any], request: PolicyRequest) -> bool:
     if op == "ne":
         return actual != expected
     if op == "in":
-        return actual in expected
+        return isinstance(expected, (list, tuple)) and actual in expected
     if op == "contains":
         return expected in actual
+    if op == "lt":
+        return actual < expected
+    if op == "lte":
+        return actual <= expected
+    if op == "gt":
+        return actual > expected
+    if op == "gte":
+        return actual >= expected
     return False
 
 
